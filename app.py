@@ -1,30 +1,31 @@
 """
-基金净值走势图自动生成器
+基金净值走势可视化工具
 
 功能描述:
     本脚本从东方财富网基金数据中心抓取指定基金的历史净值数据，
     经过数据处理后生成交互式的净值走势图网页（HTML格式）。
-    
+
 主要特性:
     1. 支持多基金品种同时展示和对比
     2. 自动从网络获取最新净值数据
     3. 生成可交互的图表（支持缩放、悬停查看详情）
-    4. 每日定时自动更新（配合GitHub Actions）
-    5. 完善的错误处理和日志记录
+    4. 完善的错误处理和日志记录
+    5. 支持主备两套基金配置灵活切换
 
 使用方式:
     直接运行: python app.py
     生成的文件: index.html（项目根目录）
 
 作者: Auto-generated
-版本: 1.0
+版本: 2.0
 """
 
 import os
 import re
 import json
 import logging
-from typing import List, Dict, Any
+from typing import Dict, List, Tuple, Optional, Any
+from datetime import datetime
 
 import requests
 import pandas as pd
@@ -32,368 +33,481 @@ from pyecharts import options as opts
 from pyecharts.charts import Line
 from pyecharts.globals import ThemeType
 
+
 # =============================================================================
 # 日志配置
 # =============================================================================
-# 配置日志格式和级别，INFO级别会输出所有INFO及以上级别的日志
-# 格式: 时间 - 级别名称 - 消息内容
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
-# 获取当前模块的日志记录器，用于在代码中输出日志
 logger = logging.getLogger(__name__)
 
-# =============================================================================
-# 全局配置
-# =============================================================================
-# fund: 基金列表，每个基金包含name(显示名称)和code(基金代码)
-#        基金代码为东方财富网使用的6位数字代码
-# output_dir: 生成的HTML文件输出目录，"."表示当前根目录
-# page_size: 每次请求获取的净值记录数量，默认20条
-CONFIG = {
-    "funds": [
-        {"name": "中证500", "code": "160119"},
-        {"name": "芯片", "code": "008887"},
-        {"name": "5G", "code": "008086"},
-        {"name": "云计算", "code": "017854"},
-        {"name": "恒生指数", "code": "164705"},
-        {"name": "人工智能", "code": "008082"},
-    ],
-    "output_dir": ".",
-    "page_size": 20,
-}
 
+class FundDataFetcher:
+    """
+    基金数据获取器
 
-def jsjz_api(code: str, pageSize: int = 20) -> List[Dict[str, Any]]:
+    负责从东方财富网API获取基金净值数据。
+    实现了动态回调函数生成、请求参数构建、响应解析等功能。
+
+    接口说明:
+        - 接口地址: http://api.fund.eastmoney.com/f10/lsjz
+        - 返回格式: JSONP格式，需要提取内层JSON数据
+        - 数据频率: 每个交易日更新
+        - 数据字段: FSRQ(日期), DWJZ(单位净值), ACCUM(累计净值)等
     """
-    获取指定基金的净值历史数据
-    
-    参数说明:
-        code: 基金代码，6位数字字符串，如'160119'
-        pageSize: 每次请求返回的记录数量，默认20条
-    
-    返回值:
-        成功返回净值记录列表，每条记录包含日期(FSRQ)、单位净值(DWJZ)等字段
-        失败返回空列表
-    
-    数据来源:
-        东方财富网基金历史净值接口: http://api.fund.eastmoney.com/f10/lsjz
-    
-    接口特点:
-        返回JSONP格式数据（被JavaScript函数调用的JSON）
-        需要正确的Referer和User-Agent请求头才能访问
-        返回数据按日期倒序排列（最新在前）
-    """
-    # 构建完整的请求URL，将各参数拼接
-    # callback: JSONP回调函数名，用于包裹返回的JSON数据
-    # fundCode: 基金代码
-    # pageIndex/pageSize: 分页参数
-    # startDate/endDate: 日期范围筛选，默认为空获取所有数据
-    url = (
-        f"http://api.fund.eastmoney.com/f10/lsjz"
-        f"?callback=jQuery1830041192874394646584_1617938643457"
-        f"&fundCode={code}"
-        f"&pageIndex=1"
-        f"&pageSize={pageSize}"
-        f"&startDate=&endDate=&_=1617939181252"
-    )
-    
-    # 请求头配置，模拟浏览器访问
-    # Referer: 设置为基金详情页URL，表示从基金页面跳转而来
-    # User-Agent: 浏览器标识，避免被服务器识别为爬虫
-    headers = {
-        "Referer": "http://fundf10.eastmoney.com/",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+
+    BASE_URL = "http://api.fund.eastmoney.com/f10/lsjz"
+
+    DEFAULT_HEADERS = {
+        'Referer': 'http://fundf10.eastmoney.com/',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
-    
-    try:
-        # 发送HTTP GET请求
-        # timeout=30: 设置30秒超时，防止请求无限期挂起
-        resp = requests.get(url, headers=headers, timeout=30)
-        
-        # 检查HTTP响应状态码，4xx/5xx会抛出异常
-        resp.raise_for_status()
-        
-        # 获取响应体文本内容
-        # 返回格式类似: jQuery1830041192874394646584_1617938643457({"Data": {...}})
-        html = resp.text
-        
-        # 使用正则表达式提取括号内的JSON数据
-        # 正则解释: \( 匹配左括号，(.*?) 非贪婪匹配任意字符直到下一个模式，\) 匹配右括号
-        res = re.findall(r"\((.*?)\)", html)
-        
-        # 如果没有匹配到数据，返回空列表
-        if not res:
-            logger.warning(f"基金 {code} 返回数据为空")
-            return []
-        
-        # 解析JSON字符串为Python字典
-        # res[0] 是提取出来的JSON字符串
-        data = json.loads(res[0])
-        
-        # 从返回数据中提取净值列表
-        # 格式: {"Data": {"LSJZList": [...]}}
-        # 使用get方法避免KeyError，如果没有数据返回空列表
-        return data.get("Data", {}).get("LSJZList", [])
-    
-    # 捕获网络请求相关异常
-    except requests.RequestException as e:
-        logger.error(f"请求失败 (基金 {code}): {e}")
-        return []
-    
-    # 捕获JSON解析异常
-    except json.JSONDecodeError as e:
-        logger.error(f"JSON 解析失败 (基金 {code}): {e}")
-        return []
-    
-    # 捕获其他未知异常，确保程序不会崩溃
-    except Exception as e:
-        logger.error(f"未知错误 (基金 {code}): {e}")
-        return []
+
+    DEFAULT_PAGE_SIZE = 60
+
+    @classmethod
+    def _generate_timestamp(cls) -> Tuple[int, str]:
+        """
+        生成时间戳和回调函数字符串
+
+        生成符合东方财富API要求的回调函数格式。
+        回调函数名格式: jQuery_{timestamp}_{sequence}
+
+        Returns:
+            Tuple[时间戳, 回调函数名字符串]
+        """
+        timestamp = int(datetime.now().timestamp() * 1000)
+        sequence = timestamp + 1000
+        callback = f"jQuery_{timestamp}_{sequence}"
+        return timestamp, callback
+
+    @classmethod
+    def get_fund_nav_data(cls, code: str, page_size: int = DEFAULT_PAGE_SIZE) -> Optional[List[Dict[str, Any]]]:
+        """
+        获取指定基金的净值历史数据
+
+        Args:
+            code: 基金代码，6位数字字符串，如 '510310'
+            page_size: 每次请求返回的记录数量，默认60条（约3个月数据）
+
+        Returns:
+            成功返回净值记录列表，每条记录包含日期(FSRQ)、单位净值(DWJZ)等字段
+            失败返回 None
+
+        Raises:
+            网络异常: 打印警告并返回 None
+            数据解析异常: 打印错误信息并返回 None
+        """
+        timestamp, callback = cls._generate_timestamp()
+
+        params = {
+            'callback': callback,
+            'fundCode': code,
+            'pageIndex': 1,
+            'pageSize': page_size,
+            'startDate': '',
+            'endDate': '',
+            '_': timestamp
+        }
+
+        try:
+            response = requests.get(
+                cls.BASE_URL,
+                params=params,
+                headers=cls.DEFAULT_HEADERS,
+                timeout=10
+            )
+            response.raise_for_status()
+
+            json_match = re.search(r'\((.*?)\)', response.text)
+            if not json_match:
+                logger.warning(f"基金 {code}: 无法解析返回数据，数据格式异常")
+                return None
+
+            data = json.loads(json_match.group(1))
+
+            if data.get("ErrCode") != 0:
+                logger.warning(f"基金 {code}: API返回错误 - {data.get('ErrMsg', '未知错误')}")
+                return None
+
+            return data.get("Data", {}).get("LSJZList", [])
+
+        except requests.RequestException as e:
+            logger.error(f"基金 {code}: 网络请求失败 - {str(e)}")
+            return None
+        except (json.JSONDecodeError, KeyError) as e:
+            logger.error(f"基金 {code}: 数据解析失败 - {str(e)}")
+            return None
+        except Exception as e:
+            logger.error(f"基金 {code}: 未知错误 - {str(e)}")
+            return None
 
 
-def fetch_fund_data(codes: List[str]) -> tuple:
+class FundDataProcessor:
     """
-    批量获取多个基金的净值数据
-    
-    参数说明:
-        codes: 基金代码列表，如 ['160119', '008887']
-    
-    返回值:
-        元组 (riqi, fund_data)
-        - riqi: 字典，{索引: 日期字符串}
-        - fund_data: 字典，{基金代码: {索引: 净值数值}}
-        两个字典使用相同索引对齐数据
-    
-    数据对齐说明:
-        由于不同基金交易日可能不同（节假日休市），
-        采用反向遍历方式，从最新数据开始填充，
-        确保所有基金共享相同的日期索引
+    基金数据处理器
+
+    负责基金数据的批量获取、格式转换和对齐处理。
+    确保不同基金的数据按日期正确对齐。
     """
-    # riqi字典: 存储索引到日期的映射
-    # 例如: {0: '2025-01-10', 1: '2025-01-09', ...}
-    riqi = {}
-    
-    # fund_data字典: 存储每个基金的净值数据
-    # 初始化为 {基金代码: {}}
-    fund_data = {code: {} for code in codes}
-    
-    # 遍历每个基金代码获取数据
-    for code in codes:
-        # 调用接口获取该基金的净值列表
-        data = jsjz_api(code)
-        
-        # 反向遍历数据，从最新日期开始
-        # reversed() 将列表反转，最新数据在前
-        for index, item in enumerate(reversed(data)):
-            # item['FSRQ'] 是净值日期，格式: YYYY-MM-DD
-            riqi[index] = item["FSRQ"]
-            # item['DWJZ'] 是单位净值，转换为浮点数
-            fund_data[code][index] = float(item["DWJZ"])
-    
-    return riqi, fund_data
+
+    @classmethod
+    def fetch_multiple_funds_data(cls, fund_codes: List[str]) -> Tuple[Dict[int, str], Dict[str, Dict[int, float]]]:
+        """
+        批量获取多个基金的净值数据
+
+        Args:
+            fund_codes: 基金代码列表
+
+        Returns:
+            Tuple[日期字典, 基金净值字典]
+            - 日期字典: {索引: 日期字符串}，所有基金共享相同的日期索引
+            - 基金净值字典: {基金代码: {索引: 净值}}，按索引与日期字典对齐
+
+        数据对齐说明:
+            由于不同基金交易日可能不同（节假日休市），
+            采用反向遍历方式，从最新数据开始填充索引，
+            确保所有基金使用相同的日期序列
+        """
+        date_mapping: Dict[int, str] = {}
+        fund_data: Dict[str, Dict[int, float]] = {code: {} for code in fund_codes}
+
+        for code in fund_codes:
+            logger.info(f"正在获取基金 {code} 的数据...")
+            data = FundDataFetcher.get_fund_nav_data(code)
+
+            if not data:
+                logger.warning(f"基金 {code}: 数据获取失败，已跳过")
+                continue
+
+            for index, item in enumerate(reversed(data)):
+                date_str = item.get('FSRQ', '')
+                nav_value = item.get('DWJZ', '0')
+
+                if index not in date_mapping:
+                    date_mapping[index] = date_str
+
+                try:
+                    fund_data[code][index] = float(nav_value)
+                except ValueError:
+                    fund_data[code][index] = 0.0
+                    logger.warning(f"基金 {code}: 第 {index} 天净值格式错误 - {nav_value}")
+
+        return date_mapping, fund_data
+
+    @classmethod
+    def calculate_yaxis_range(cls, data_series: pd.Series, margin_ratio: float = 0.08) -> Tuple[float, float]:
+        """
+        计算Y轴的显示范围
+
+        根据数据最大值和最小值，计算合适的Y轴显示范围，
+        留出边距使图表视觉效果更好。
+
+        Args:
+            data_series: pandas Series，包含基金净值数据
+            margin_ratio: 边距比例，默认8%（上下各留8%边距）
+
+        Returns:
+            Tuple[y_max, y_min]
+            - y_max: Y轴最大值 = 数据最大值 × (1 + margin_ratio)
+            - y_min: Y轴最小值 = 数据最小值 × (1 - margin_ratio)
+            结果四舍五入保留4位小数
+
+        示例:
+            >>> calculate_yaxis_range(pd.Series([1.0, 1.1, 1.2]))
+            (1.296, 0.92)
+        """
+        if data_series.empty:
+            return 1.0, 0.0
+
+        y_max = data_series.max() * (1 + margin_ratio)
+        y_min = data_series.min() * (1 - margin_ratio)
+        y_min = max(y_min, 0)
+
+        return round(y_max, 4), round(y_min, 4)
 
 
-def set_y_axis(data) -> tuple:
+class FundChartGenerator:
     """
-    根据数据计算Y轴的显示范围
-    
-    参数说明:
-        data: pandas Series类型，包含基金的净值数据
-    
-    返回值:
-        元组 (y_max, y_min)
-        - y_max: Y轴最大值 = 数据最大值 × 1.08
-        - y_min: Y轴最小值 = 数据最小值 × 0.92
-    
-    计算说明:
-        乘以系数是为了在数据点和坐标轴之间留出边距
-        1.08和0.92是经验值，使图表视觉效果更好
-        结果保留4位小数
-    """
-    # 计算Y轴范围，并四舍五入保留4位小数
-    y_max = round(data.max() * 1.08, 4)
-    y_min = round(data.min() * 0.92, 4)
-    
-    return y_max, y_min
+    基金图表生成器
 
+    负责将基金数据转换为交互式可视化图表。
+    支持多基金对比、数据缩放、工具箱等功能。
 
-def generate_chart() -> Line:
-    """
-    生成基金净值走势图图表
-    
-    处理流程:
-        1. 从CONFIG获取基金配置信息
-        2. 批量获取所有基金的净值数据
-        3. 将数据转换为pandas DataFrame格式
-        4. 创建折线图并绑定数据
-        5. 添加最大/最小值标记和平均值参考线
-        6. 配置图表全局选项
-    
-    返回值:
-        Line对象: 配置完成的pyecharts折线图对象
-    
     图表特性:
-        - 交互式: 支持缩放、悬停查看详情、点击图例切换显示
-        - 多系列: 每个基金一条折线
-        - 标记点: 自动标注最大/最小值
-        - 参考线: 显示平均值
+        - 交互式折线图，支持鼠标悬停查看详情
+        - 数据缩放组件，支持滑块和内置缩放
+        - 滚动图例，避免过多基金时重叠
+        - 标记点和参考线（最大/最小值、平均值）
+        - 工具箱（保存图片、数据视图、还原等）
     """
-    # 从CONFIG中提取基金名称和代码列表
-    # names: ['中证500', '芯片', ...]
-    # codes: ['160119', '008887', ...]
-    names = [f["name"] for f in CONFIG["funds"]]
-    codes = [f["code"] for f in CONFIG["funds"]]
-    
-    # 获取所有基金的净值数据
-    riqi, cn_data = fetch_fund_data(codes)
-    
-    # 构建DataFrame数据
-    # nav_dict格式: {'日期': {0: '2025-01-10', ...}, '160119': {...}, '008887': {...}}
-    nav_dict = {"日期": riqi}
-    for code, data in cn_data.items():
-        nav_dict[code] = data
-    
-    # 转换为pandas DataFrame，便于数据处理
-    # 每列代表一个基金，索引为日期序列
-    nav_data = pd.DataFrame(nav_dict)
-    
-    # 创建折线图对象
-    # InitOpts: 初始化配置
-    # theme=ThemeType.LIGHT: 使用浅色主题
-    # width/height: 图表尺寸（像素）
-    line = Line(
-        init_opts=opts.InitOpts(
-            theme=ThemeType.LIGHT,
-            width="1200px",
-            height="500px"
+
+    FUND_CONFIG = {
+        '沪深300': '510310',
+        '中证500': '510500',
+        '中证红利': '515180',
+        '中证国防': '512670',
+        '中证军工': '512660',
+        '芯片': '159995',
+        '机器人': '562500',
+        '人工智能': '515980',
+        '5G': '515050',
+        '云计算': '516510',
+        '恒生指数': '159920',
+        '标普500': '513500'
+    }
+
+    ALTERNATIVE_FUND_CONFIG = {
+        '沪深300': '007339',
+        '中证500': '070039',
+        '中证红利': '100032',
+        '中证国防': '012041',
+        '中证军工': '002199',
+        '芯片': '008887',
+        '机器人': '014881',
+        '人工智能': '008082',
+        '5G': '008086',
+        '云计算': '017854',
+        '恒生指数': '164705',
+        '标普500': '050025'
+    }
+
+    def __init__(self, use_alternative: bool = True):
+        """
+        初始化图表生成器
+
+        Args:
+            use_alternative: 是否使用备选基金代码，默认True
+                True: 使用 ALTERNATIVE_FUND_CONFIG
+                False: 使用 FUND_CONFIG
+        """
+        self.fund_config = self.ALTERNATIVE_FUND_CONFIG if use_alternative else self.FUND_CONFIG
+        self.fund_names = list(self.fund_config.keys())
+        self.fund_codes = list(self.fund_config.values())
+
+    def prepare_chart_data(self) -> Optional[pd.DataFrame]:
+        """
+        准备图表数据
+
+        获取所有配置基金的净值数据，并转换为pandas DataFrame格式。
+
+        Returns:
+            DataFrame格式的基金数据，包含日期和各基金净值
+            列: '日期', '基金名称1', '基金名称2', ...
+            获取失败返回 None
+
+        数据质量检查:
+            - 检查数据是否为空
+            - 检查数据条数
+            - 统计包含的基金数量
+        """
+        logger.info("正在获取基金数据...")
+        date_mapping, fund_data = FundDataProcessor.fetch_multiple_funds_data(self.fund_codes)
+
+        if not date_mapping or not any(fund_data.values()):
+            logger.error("无法获取有效的基金数据")
+            return None
+
+        nav_dict: Dict[str, Any] = {'日期': date_mapping}
+
+        for name, code in self.fund_config.items():
+            if code in fund_data and fund_data[code]:
+                nav_dict[name] = fund_data[code]
+            else:
+                logger.warning(f"基金 {name}({code}): 数据为空，将用0填充")
+                nav_dict[name] = {i: 0.0 for i in range(len(date_mapping))}
+
+        nav_df = pd.DataFrame(nav_dict)
+
+        logger.info(f"获取到 {len(nav_df)} 天的数据")
+        logger.info(f"包含 {len(self.fund_names)} 个基金")
+
+        return nav_df
+
+    def generate_chart(self, nav_data: pd.DataFrame) -> Line:
+        """
+        生成基金净值走势图
+
+        Args:
+            nav_data: pandas DataFrame，包含日期和各基金净值数据
+
+        Returns:
+            pyecharts Line图表对象，可直接调用render()方法生成HTML
+
+        图表配置:
+            - 主题: LIGHT（浅色主题）
+            - 尺寸: 1400x700像素
+            - X轴: 日期，旋转45度避免重叠
+            - Y轴: 单位净值，自动计算范围
+            - 数据缩放: 内置型 + 滑块型
+            - 图例: 滚动模式，支持多基金
+        """
+        logger.info("正在生成图表...")
+
+        line_chart = Line(
+            init_opts=opts.InitOpts(
+                theme=ThemeType.LIGHT,
+                width="1400px",
+                height="700px",
+                page_title="基金净值走势图"
+            )
         )
-    )
-    
-    # 设置X轴数据
-    # 将日期列表转换为Python列表
-    line.add_xaxis(nav_data["日期"].tolist())
-    
-    # 用于存储每个基金的Y轴范围配置
-    fund_series = []
-    
-    # 遍历每个基金，添加一条折线
-    for name, code in zip(names, codes):
-        # 获取该基金的净值数据列表
-        y_data = nav_data[code].tolist()
-        
-        # 计算该基金的Y轴范围
-        y_max, y_min = set_y_axis(nav_data[code])
-        
-        # 保存配置信息
-        fund_series.append(
-            {
-                "name": name,
-                "y_data": y_data,
-                "y_max": y_max,
-                "y_min": y_min,
-            }
-        )
-        
-        # 添加Y轴数据系列
-        # series_name: 图例名称
-        # y_axis: Y轴数据列表
-        # is_symbol_show: 是否显示数据点标记
-        line.add_yaxis(
-            series_name=name,
-            y_axis=y_data,
-            is_symbol_show=True,
-            
-            # 标记点配置：标注最大值和最小值
-            markpoint_opts=opts.MarkPointOpts(
-                data=[
-                    opts.MarkPointItem(type_="min", name="最小值"),
-                    opts.MarkPointItem(type_="max", name="最大值"),
-                ]
+
+        dates = nav_data['日期'].tolist()
+        line_chart.add_xaxis(dates)
+
+        y_axis_ranges: List[Tuple[float, float]] = []
+
+        for fund_name in self.fund_names:
+            if fund_name not in nav_data.columns:
+                continue
+
+            fund_series_data = nav_data[fund_name].tolist()
+            y_max, y_min = FundDataProcessor.calculate_yaxis_range(nav_data[fund_name])
+            y_axis_ranges.append((y_max, y_min))
+
+            line_chart.add_yaxis(
+                series_name=fund_name,
+                y_axis=fund_series_data,
+                is_smooth=True,
+                is_symbol_show=True,
+                label_opts=opts.LabelOpts(is_show=False),
+                markpoint_opts=opts.MarkPointOpts(
+                    data=[
+                        opts.MarkPointItem(type_="min", name="最低"),
+                        opts.MarkPointItem(type_="max", name="最高")
+                    ]
+                ),
+                markline_opts=opts.MarkLineOpts(
+                    data=[opts.MarkLineItem(type_="average", name="均值")]
+                )
+            )
+
+        all_y_max = max([r[0] for r in y_axis_ranges]) if y_axis_ranges else None
+        all_y_min = min([r[1] for r in y_axis_ranges]) if y_axis_ranges else None
+
+        line_chart.set_global_opts(
+            title_opts=opts.TitleOpts(
+                title="基金净值走势图",
+                subtitle=f"数据更新至: {dates[-1] if dates else '未知'} | 共{len(dates)}个交易日",
+                title_textstyle_opts=opts.TextStyleOpts(font_size=24),
+                subtitle_textstyle_opts=opts.TextStyleOpts(font_size=12, color="gray")
             ),
-            
-            # 标记线配置：显示平均值参考线
-            markline_opts=opts.MarkLineOpts(
-                data=[opts.MarkLineItem(type_="average", name="平均值")]
+            tooltip_opts=opts.TooltipOpts(
+                trigger="axis",
+                axis_pointer_type="cross",
+                background_color="rgba(255,255,255,0.9)"
             ),
+            legend_opts=opts.LegendOpts(
+                type_="scroll",
+                pos_top="5%",
+                pos_left="center"
+            ),
+            datazoom_opts=[
+                opts.DataZoomOpts(range_start=0, range_end=100, type_="inside"),
+                opts.DataZoomOpts(is_show=True, type_="slider", pos_bottom="5%")
+            ],
+            yaxis_opts=opts.AxisOpts(
+                name="单位净值",
+                name_location="end",
+                max_=all_y_max,
+                min_=all_y_min,
+                axislabel_opts=opts.LabelOpts(formatter="{value}"),
+                splitline_opts=opts.SplitLineOpts(is_show=True)
+            ),
+            xaxis_opts=opts.AxisOpts(
+                name="日期",
+                name_location="end",
+                axislabel_opts=opts.LabelOpts(rotate=45),
+                splitline_opts=opts.SplitLineOpts(is_show=True)
+            ),
+            toolbox_opts=opts.ToolboxOpts(
+                is_show=True,
+                feature={
+                    "saveAsImage": {"title": "保存图片"},
+                    "dataView": {"title": "数据视图", "lang": ["数据视图", "关闭", "刷新"]},
+                    "restore": {"title": "还原"},
+                    "dataZoom": {"title": "区域缩放"}
+                }
+            )
         )
-    
-    # 设置全局配置
-    line.set_global_opts(
-        # 标题配置
-        title_opts=opts.TitleOpts(
-            title="净值走势图",
-            subtitle="数据来源: 东方财富"
-        ),
-        
-        # 缩放组件配置：添加X轴缩放滑块
-        datazoom_opts=[opts.DataZoomOpts()],
-        
-        # Y轴配置
-        yaxis_opts=opts.AxisOpts(
-            # Y轴最大值：所有基金的最大值中的最大值
-            max_=max(fund["y_max"] for fund in fund_series),
-            # Y轴最小值：所有基金的最小值中的最小值
-            min_=min(fund["y_min"] for fund in fund_series),
-            # 刻度间隔
-            interval=0.02,
-        ),
-    )
-    
-    return line
+
+        return line_chart
+
+    def save_chart_to_html(self, chart: Line, output_dir: str = ".") -> str:
+        """
+        将图表保存为HTML文件
+
+        Args:
+            chart: pyecharts Line图表对象
+            output_dir: 输出目录路径，默认为当前目录
+
+        Returns:
+            保存的HTML文件完整路径
+
+        输出文件:
+            格式: 包含完整HTML、CSS、JavaScript的可独立运行网页
+            文件名: index.html
+        """
+        os.makedirs(output_dir, exist_ok=True)
+
+        output_path = os.path.join(output_dir, "index.html")
+        chart.render(output_path)
+
+        return output_path
 
 
 def main() -> None:
     """
-    主函数：执行完整的图表生成流程
-    
+    主函数：执行基金数据获取、图表生成和保存的完整流程
+
     执行步骤:
-        1. 输出开始运行日志
-        2. 检查并创建输出目录
-        3. 调用generate_chart()生成图表
-        4. 将图表渲染为HTML文件
-        5. 验证文件是否创建成功
-    
-    输出文件:
-        位置: CONFIG["output_dir"] 指定的目录
-        文件名: index.html
-        格式: 包含完整HTML、CSS、JavaScript的可独立运行的网页
+        1. 输出程序开始运行信息
+        2. 初始化图表生成器
+        3. 获取并处理基金数据
+        4. 生成交互式图表
+        5. 保存为HTML文件
+        6. 输出执行结果和数据摘要
+
+    输出:
+        - index.html: 交互式基金净值走势图网页
+        - 控制台日志: 程序执行过程信息
     """
-    # 输出开始运行日志
-    logger.info("开始生成基金净值走势图...")
-    
-    # 获取输出目录路径
-    output_dir = CONFIG["output_dir"]
-    
-    # 检查输出目录是否存在
-    if not os.path.exists(output_dir):
-        # 不存在则创建目录（包括多级目录）
-        os.makedirs(output_dir)
-        logger.info(f"已创建目录: {output_dir}")
-    
-    # 生成图表对象
-    chart = generate_chart()
-    
-    # 构建输出文件完整路径
-    output_path = os.path.join(output_dir, "index.html")
-    
-    # 将图表渲染为HTML文件
-    # render() 方法会生成包含所有图表代码的HTML文件
-    chart.render(output_path)
-    logger.info(f"网站已成功生成在 {output_path}")
-    
-    # 验证文件是否创建成功
-    if os.path.exists(output_path):
-        logger.info("✅ 文件创建成功！")
-    else:
-        logger.error("❌ 文件创建失败，请检查权限或路径")
+    print("=" * 50)
+    print("基金净值走势可视化工具")
+    print("=" * 50)
+
+    try:
+        logger.info("初始化图表生成器...")
+        chart_generator = FundChartGenerator(use_alternative=True)
+
+        nav_data = chart_generator.prepare_chart_data()
+
+        if nav_data is None:
+            logger.error("程序终止: 无法获取有效的基金数据")
+            return
+
+        chart = chart_generator.generate_chart(nav_data)
+
+        output_path = chart_generator.save_chart_to_html(chart)
+
+        print("\n" + "=" * 50)
+        print("程序执行完成！")
+        print(f"图表已保存至: {output_path}")
+        print(f"请在浏览器中打开该文件查看图表")
+        print("=" * 50)
+
+        logger.info(f"数据摘要:")
+        logger.info(f"时间范围: {nav_data['日期'].iloc[0]} 至 {nav_data['日期'].iloc[-1]}")
+        logger.info(f"包含基金: {', '.join(chart_generator.fund_names)}")
+
+    except Exception as e:
+        logger.error(f"程序执行出错: {str(e)}")
+        import traceback
+        traceback.print_exc()
 
 
-# =============================================================================
-# 程序入口
-# =============================================================================
-# 当脚本直接运行时（而不是被导入为模块时），执行main函数
-# 这是Python的常用模式
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
