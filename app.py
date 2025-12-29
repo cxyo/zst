@@ -67,6 +67,10 @@ class FundDataFetcher:
 
     DEFAULT_PAGE_SIZE = 60
 
+    REQUEST_INTERVAL = 0.5
+
+    _last_request_time = 0.0
+
     @classmethod
     def _generate_timestamp(cls) -> Tuple[int, str]:
         """
@@ -82,6 +86,22 @@ class FundDataFetcher:
         sequence = timestamp + 1000
         callback = f"jQuery_{timestamp}_{sequence}"
         return timestamp, callback
+
+    @classmethod
+    def _ensure_request_interval(cls) -> None:
+        """
+        确保请求间隔
+
+        控制请求频率，避免被服务器封禁。
+        每次请求前等待足够的时间间隔。
+        """
+        current_time = datetime.now().timestamp()
+        elapsed = current_time - cls._last_request_time
+        if elapsed < cls.REQUEST_INTERVAL:
+            sleep_time = cls.REQUEST_INTERVAL - elapsed
+            import time
+            time.sleep(sleep_time)
+        cls._last_request_time = datetime.now().timestamp()
 
     @classmethod
     def get_fund_nav_data(cls, code: str, page_size: int = DEFAULT_PAGE_SIZE) -> Optional[List[Dict[str, Any]]]:
@@ -100,6 +120,8 @@ class FundDataFetcher:
             网络异常: 打印警告并返回 None
             数据解析异常: 打印错误信息并返回 None
         """
+        cls._ensure_request_interval()
+
         timestamp, callback = cls._generate_timestamp()
 
         params = {
@@ -350,8 +372,9 @@ class FundChartGenerator:
             init_opts=opts.InitOpts(
                 theme=ThemeType.LIGHT,
                 width="1400px",
-                height="700px",
-                page_title="基金净值走势图"
+                height="800px",
+                page_title="基金净值走势图",
+                js_host=""
             )
         )
 
@@ -389,12 +412,6 @@ class FundChartGenerator:
         all_y_min = min([r[1] for r in y_axis_ranges]) if y_axis_ranges else None
 
         line_chart.set_global_opts(
-            title_opts=opts.TitleOpts(
-                title="基金净值走势图",
-                subtitle=f"数据更新至: {dates[-1] if dates else '未知'} | 共{len(dates)}个交易日",
-                title_textstyle_opts=opts.TextStyleOpts(font_size=24),
-                subtitle_textstyle_opts=opts.TextStyleOpts(font_size=12, color="gray")
-            ),
             tooltip_opts=opts.TooltipOpts(
                 trigger="axis",
                 axis_pointer_type="cross",
@@ -436,12 +453,13 @@ class FundChartGenerator:
 
         return line_chart
 
-    def save_chart_to_html(self, chart: Line, output_dir: str = ".") -> str:
+    def save_chart_to_html(self, chart: Line, nav_data: pd.DataFrame, output_dir: str = ".") -> str:
         """
         将图表保存为HTML文件
 
         Args:
             chart: pyecharts Line图表对象
+            nav_data: pandas DataFrame，包含日期和各基金净值数据
             output_dir: 输出目录路径，默认为当前目录
 
         Returns:
@@ -455,6 +473,33 @@ class FundChartGenerator:
 
         output_path = os.path.join(output_dir, "index.html")
         chart.render(output_path)
+
+        with open(output_path, 'r', encoding='utf-8') as f:
+            html_content = f.read()
+
+        dates = nav_data['日期'].tolist() if '日期' in nav_data.columns else []
+        last_date = dates[-1] if dates else '未知'
+        total_days = len(dates) if dates else 0
+
+        title_div = f'''
+        <div style="width:100%;text-align:center;padding:15px 0;margin:0;background:#f5f5f5;border-bottom:1px solid #ddd;">
+            <h1 style="margin:0;font-size:22px;font-weight:bold;color:#333;font-family:Microsoft YaHei,sans-serif;">基金净值走势图</h1>
+            <p style="margin:8px 0 0 0;font-size:13px;color:#666;font-family:Microsoft YaHei,sans-serif;">数据更新至: {last_date}  |  共 {total_days} 个交易日</p>
+        </div>
+'''
+
+        import re
+        chart_div_pattern = r'<div id="[a-f0-9]+" class="chart-container" style="width:\d+px; height:\d+px; "></div>'
+        chart_div_match = re.search(chart_div_pattern, html_content)
+
+        if chart_div_match:
+            html_content = html_content.replace(
+                chart_div_match.group(0),
+                f'{title_div}\n        {chart_div_match.group(0)}'
+            )
+
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(html_content)
 
         return output_path
 
@@ -491,7 +536,7 @@ def main() -> None:
 
         chart = chart_generator.generate_chart(nav_data)
 
-        output_path = chart_generator.save_chart_to_html(chart)
+        output_path = chart_generator.save_chart_to_html(chart, nav_data)
 
         print("\n" + "=" * 50)
         print("程序执行完成！")
