@@ -138,6 +138,54 @@ API返回的数据采用JSONP格式，外层是回调函数调用，内层是JSO
 
 如果生成的图表出现标题与内容重叠的情况，请确保使用的是最新版本的程序。旧版本可能使用pyecharts内置的标题选项，导致标题与图表区域重叠。最新版本采用HTML自定义标题方案，标题区域与图表区域完全分离，不会出现重叠问题。如仍有问题，请检查浏览器缩放设置，确保使用100%的缩放比例查看页面。
 
+### GitHub Pages显示README.md而不是index.html
+
+**问题描述**：GitHub Actions运行成功，但访问网站时显示的是README.md内容，而不是预期的基金净值走势图。
+
+**原因分析**：
+1. GitHub Pages的默认行为是：当仓库中没有`index.html`文件时，自动显示`README.md`作为首页
+2. 虽然Actions显示成功，但可能没有成功生成或提交`index.html`文件
+3. 可能是因为权限问题导致无法推送`index.html`文件到仓库
+
+**解决方案**：
+
+1. **检查仓库中是否存在index.html**
+   - 登录GitHub，进入仓库页面，查看文件列表中是否有`index.html`文件
+   - 如果不存在，说明Actions没有成功生成或提交该文件
+
+2. **检查Actions日志**
+   - 进入仓库的Actions页面，查看最新的"Update Fund Data" workflow运行日志
+   - 重点检查"Generate fund chart"步骤是否成功，是否有"图表已保存至: ./index.html"的输出
+   - 检查"Commit and push changes"步骤是否成功，是否有"1 file changed, xxx insertions(+), xxx deletions(-)"的输出
+
+3. **确保已添加write权限**
+   - 检查`.github/workflows/update-fund-data.yml`文件中是否包含以下权限配置：
+     ```yaml
+     permissions:
+       contents: write
+       pages: write
+       id-token: write
+     ```
+   - 如果缺少该配置，GitHub Actions机器人将没有权限推送更改到仓库
+
+4. **手动触发Actions**
+   - 在Actions页面点击"Run workflow"按钮，手动触发一次数据更新
+   - 等待运行完成后，再次检查仓库中是否生成了`index.html`文件
+
+5. **手动生成并推送index.html**
+   - 如果以上方法都不行，可以在本地克隆仓库，手动运行程序生成`index.html`
+   - 然后将生成的文件推送到仓库：
+     ```bash
+     git add index.html
+     git commit -m "Add index.html manually"
+     git push
+     ```
+
+**预防措施**：
+- 定期检查Actions运行状态，确保工作流正常执行
+- 监控仓库中是否存在`index.html`文件
+- 确保GitHub Actions配置文件中包含正确的权限设置
+
 ## 扩展开发
 
 本项目的架构设计充分考虑了扩展性和可维护性，提供了多个扩展开发方向供用户参考和实现。数据源扩展方面，如果需要从其他数据源获取基金数据，例如天天基金、蛋卷基金等，可以创建新的数据获取类，继承数据处理层的统一接口。新的数据获取类需要实现与FundDataFetcher类相同的方法签名，确保数据格式的一致性。图表类型扩展方面，pyecharts支持多种图表类型，包括K线图、折线图、面积图、柱状图等。如果需要生成其他类型的图表展示基金数据，可以继承FundChartGenerator类并重写图表生成逻辑。数据存储扩展方面，当前版本的数据仅存储为HTML文件，如需持久化存储到数据库或云存储，可以扩展数据处理层实现相应的存储逻辑。
@@ -192,64 +240,9 @@ GitHub Actions工作流程的执行过程分为以下四个步骤。
 
 修改定时任务后，新的时间计划可能需要等待最多5分钟才会生效。
 
-这个配置文件**已经正确放置在项目中了**！让我给您解释一下：
-
-## 文件位置
-
-当前项目结构：
-```
-d:\AI_CODE_project\DEMO\
-├── .github/
-│   └── workflows/
-│       └── update-fund-data.yml  ✅ 配置文件已存在
-├── 基金历史净值flask/
-│   ├── app.py
-│   ├── README.md
-│   └── requirements.txt
-└── index.html
-```
-
-## 配置文件如何使用
-
-这个文件已经配置好了，有**三种使用方式**：
-
-### 1. **定时自动执行**（推荐）
-- 配置文件已经设置好每天早上9点自动执行
-- 位置：[update-fund-data.yml](file:///d:/AI_CODE_project/DEMO/.github/workflows/update-fund-data.yml)
-- 无需任何操作，GitHub会自动按照cron表达式执行
-
-### 2. **手动触发**
-- 在GitHub仓库页面 → Actions → 点击"Update Fund Data" → 点击"Run workflow"
-- 适合需要立即更新数据时使用
-
-### 3. **推送代码时触发**
-- 当您修改 `app.py` 或 `requirements.txt` 并推送到main分支时
-- 工作流程会自动执行，确保代码更新后图表仍能正常生成
-
-## 下一步操作
-
-要将这个自动化部署功能启用，您只需要：
-
-1. **将项目上传到GitHub仓库**
-   - 创建新的GitHub仓库
-   - 推送本地代码（包括 `.github/workflows/` 目录）
-
-2. **启用GitHub Actions**
-   - 首次访问仓库的Actions页面时，GitHub会提示启用
-   - 点击"Enable Actions"即可
-
-3. **配置完成**
-   - 定时任务会自动开始执行
-   - 每天9点（UTC时间）会自动获取最新基金数据
-   - 更新后的图表会自动提交并推送到仓库
-
-这样您的项目就能实现**每天自动更新基金数据**，无需手动运行程序！
-
-
-
 ### 手动触发任务执行
 
-除了定时自动执行外，用户还可以手动触发GitHub Actions任务执行。在仓库的Actions页面中，找到"Update Fund Data"工作流程，点击进入详情页面。在工作流程页面右侧或顶部，找到"Run workflow"按钮并点击，会弹出一个下拉菜单显示触发选项。选择"main"分支作为运行分支，然后点击绿色的"Run workflow"按钮开始执行。手动触发的工作流程与定时触发的执行过程完全相同，会经历代码检出、Python环境配置、依赖安装、图表生成和提交更新等步骤。手动触发的优势在于可以立即获取最新数据而不需要等待定时任务时间，适合需要立即更新图表的场景。每次手动触发都會在运行历史中创建新的执行记录，可以在Actions页面查看详细的执行日志和结果。
+除了定时自动执行外，用户还可以手动触发GitHub Actions任务执行。在仓库的Actions页面中，找到"Update Fund Data"工作流程，点击进入详情页面。在工作流程页面右侧或顶部，找到"Run workflow"按钮并点击，会弹出一个下拉菜单显示触发选项。选择"main"分支作为运行分支，然后点击绿色的"Run workflow"按钮开始执行。手动触发的工作流程与定时触发的执行过程完全相同，会经历代码检出、Python环境配置、依赖安装、图表生成和提交更新等步骤。手动触发的优势在于可以立即获取最新数据而不需要等待定时任务时间，适合需要立即更新图表的场景。每次手动触发都会在运行历史中创建新的执行记录，可以在Actions页面查看详细的执行日志和结果。
 
 ### 查看执行历史和日志
 
@@ -268,6 +261,46 @@ GitHub Actions工作流程中涉及一些敏感信息需要使用Secrets进行�
 为了获得更好的GitHub Actions使用体验，可以考虑以下优化建议。合理设置执行时间，建议将定时任务的执行时间设置在交易日结束后一段时间，例如A股收盘后（15:00后），这样可以获取到当日的完整净值数据。当前配置每天9点执行可以获取到前一个交易日的数据，适合跟踪长期走势。监控执行状态，建议定期检查Actions执行历史，确保工作流程正常运行。可以设置GitHub通知，在工作流程执行失败时接收邮件通知。控制执行频率，如果不需要每日更新，可以调整cron表达式降低执行频率，减少GitHub Actions使用配额消耗。GitHub免费账户每月有2000分钟的Actions执行时间，基金数据更新每次约需1-2分钟，足够日常使用。优化代码性能，如果执行时间过长，可以考虑优化代码逻辑，例如减少不必要的API请求、增加数据缓存等。合理配置超时时间，在配置文件中设置合理的步骤超时时间，避免因网络问题导致执行卡住。可以使用`timeout-minutes`参数设置单个步骤的超时限制。
 
 本项目的面向对象设计使得扩展开发变得简单直接。如果需要添加新的数据源，可以创建继承自FundDataFetcher的新类，实现相同的接口方法，在_get_fund_nav_data方法中实现自定义的数据获取逻辑。如果需要添加新的图表类型，可以参考FundChartGenerator类的设计，创建新的图表生成器类，参考generate_chart方法实现图表配置逻辑。如果需要添加定时自动运行功能，可以使用Windows任务计划程序或Linux cron定时任务来定期执行程序脚本，通过设置定时任务实现每日自动更新图表。如果需要实现Web服务化部署，可以将图表生成逻辑封装为API接口，使用Flask或Django框架提供Web服务，实现多人共享访问的Web应用。
+
+
+
+## 解决方案
+### 1. 先检查仓库中是否存在index.html
+请登录GitHub，进入 https://github.com/cxyo/zst 仓库，查看文件列表中是否有 index.html 文件。
+
+### 2. 手动触发一次Actions
+1. 进入 https://github.com/cxyo/zst/actions
+2. 点击左侧的 Update Fund Data workflow
+3. 点击右上角的 Run workflow 按钮
+4. 选择 main 分支，然后点击 Run workflow
+### 3. 检查Actions日志
+查看最新的Workflow运行日志，特别是 Generate fund chart 步骤，看看是否有以下信息：
+
+- 是否成功获取了基金数据
+- 是否生成了index.html文件
+- 最后是否有 图表已保存至: ./index.html 的输出
+### 4. 修复可能的问题
+如果日志显示数据获取失败，可能是因为：
+
+- 基金API限制或变更
+- 网络问题
+- 代码中的基金配置错误
+## 临时解决方案
+如果以上方法都不行，你可以手动运行代码生成index.html：
+
+1. 在本地克隆仓库： git clone https://github.com/cxyo/zst.git
+2. 安装依赖： pip install -r requirements.txt
+3. 运行代码： python app.py
+4. 将生成的 index.html 推送到仓库：
+   ```
+   git add index.html
+   git commit -m "Add index.html 
+   manually"
+   git push
+   ```
+   这样网站就会显示基金走势图而不是README.md了。
+   
+   
 
 ### 添加新的基金配置
 
