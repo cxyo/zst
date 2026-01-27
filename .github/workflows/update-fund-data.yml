@@ -2,7 +2,7 @@ name: Update Fund Data
 
 on:
   schedule:
-    - cron: '0 08 * * *'  # UTC时间11:00，对应北京时间19:00
+    - cron: '0 13 * * *'  # UTC时间13:00，对应北京时间21:00
   workflow_dispatch:
   push:
     branches: [main]
