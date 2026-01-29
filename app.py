@@ -453,6 +453,38 @@ class FundChartGenerator:
 
         return line_chart
 
+    def save_data_to_json(self, nav_data: pd.DataFrame, output_dir: str = ".") -> str:
+        """
+        将基金数据保存为JSON格式文件
+
+        Args:
+            nav_data: pandas DataFrame，包含日期和各基金净值数据
+            output_dir: 输出目录路径，默认为当前目录
+
+        Returns:
+            保存的JSON文件完整路径
+
+        输出文件:
+            格式: JSON格式，包含日期和各基金净值数据
+            文件名: fund_data.json
+        """
+        os.makedirs(output_dir, exist_ok=True)
+
+        # 转换DataFrame为字典格式，便于JSON序列化
+        data_dict = {
+            'update_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'last_trading_date': nav_data['日期'].iloc[-1] if not nav_data.empty and '日期' in nav_data.columns else '未知',
+            'total_days': len(nav_data),
+            'fund_names': self.fund_names,
+            'data': nav_data.to_dict('records')
+        }
+
+        output_path = os.path.join(output_dir, "fund_data.json")
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(data_dict, f, ensure_ascii=False, indent=2)
+
+        return output_path
+
     def save_chart_to_html(self, chart: Line, nav_data: pd.DataFrame, output_dir: str = ".") -> str:
         """
         将图表保存为HTML文件
@@ -536,11 +568,16 @@ def main() -> None:
 
         chart = chart_generator.generate_chart(nav_data)
 
+        # 保存数据为JSON文件
+        json_path = chart_generator.save_data_to_json(nav_data)
+        print(f"数据已保存至: {json_path}")
+
         output_path = chart_generator.save_chart_to_html(chart, nav_data)
 
         print("\n" + "=" * 50)
         print("程序执行完成！")
         print(f"图表已保存至: {output_path}")
+        print(f"数据已保存至: {json_path}")
         print(f"请在浏览器中打开该文件查看图表")
         print("=" * 50)
 
