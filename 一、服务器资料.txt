@@ -1,0 +1,73 @@
+一、服务器资料
+硬件资料:
+硬件：
+DELL  OptiPlex Tower 7020
+系统：
+Ubuntu 24.04.4LTS
+账号：
+flex
+密码：
+password.1
+设备名称：
+WUZW12180
+网卡IP：
+10.200.136.183
+MAC地址：
+e8:cf:83:3a:73:bc
+网卡：
+enp0s31f6
+
+远程桌面端口：3388
+软件资料：
+docker容器：
+docker 29.3.1
+
+网络资料：
+车间WIFI：flex-prod
+密码：flex1234
+
+二、软件资料
+MIR版本：3.3.4
+小车版本：3.3.4
+服务器配置页面：
+http://10.200.136.183/
+账号：distributor
+密码：distributor
+小车配置界面：
+http://10.200.136.207/
+安装软件：
+配置服务器：
+配置 Docker 默认地址池
+创建文件 /etc/docker/daemon.json。
+使用以下命令： touch /etc/docker/daemon.json
+使用文本编辑器( 如 vi) 打开 /etc/docker/daemon.json 文件。如果您有 vi，即可通过 以下命令打开该文件： vi /etc/docker/daemon.json
+插入以下内容：
+{
+"bip”: “[IP]/24”,
+“default-address-pools":[
+{“base”:”[IP]/16”,”size”:24}
+]
+}
+
+ctrl+o保存enter并ctrl+x退出该文件。
+
+升级流程：
+先升级p开头的，再升级a开头的
+三、常用命令
+查询IP信息：
+ip addr show
+
+SSH
+ssh 用户名@IP
+ssh flex@10.200.136.183
+
+四、问题
+原来状态：
+小车上加了个带路由器的5G模块，小车连接的是车上这个无线路由器的WIFI网络，WIFI名称是：MIR3-CKBMW
+IP:192.168.12.253
+PAD配置页面：
+192.168.12.20
+
+1、服务器端
+
+2、小车端
